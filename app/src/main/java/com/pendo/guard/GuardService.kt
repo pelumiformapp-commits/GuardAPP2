@@ -12,9 +12,9 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.media.AudioAttributes
+import android.media.AudioFormat
 import android.media.AudioManager
-import android.media.MediaPlayer
-import android.media.RingtoneManager
+import android.media.AudioTrack
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -35,7 +35,7 @@ class GuardService : Service(), SensorEventListener {
     private val sirenDelayMs = 10000L    // time to disarm before siren
     private var sm: SensorManager? = null
     private var wl: PowerManager.WakeLock? = null
-    private var player: MediaPlayer? = null
+    private var siren: AudioTrack? = null
     private var armed = false
     private var pending = false
     private var last = -1.0
@@ -98,7 +98,7 @@ class GuardService : Service(), SensorEventListener {
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     private fun onShake() {
-        if (pending || player != null) return
+        if (pending || siren != null) return
         pending = true
         getSystemService(NotificationManager::class.java)
             .notify(1, note("Shake detected! Siren in 10 seconds"))
@@ -108,8 +108,43 @@ class GuardService : Service(), SensorEventListener {
         }, sirenDelayMs)
     }
 
+    private fun buildSiren(): AudioTrack {
+        val rate = 22050
+        val n = (rate * 1.6).toInt()
+        val data = ShortArray(n)
+        var phase = 0.0
+        for (i in 0 until n) {
+            val t = i.toDouble() / n
+            val tri = if (t < 0.5) t * 2 else (1 - t) * 2
+            val f = 700 + 1100 * tri
+            phase += 2 * Math.PI * f / rate
+            val s = if (Math.sin(phase) >= 0) 1.0 else -1.0
+            data[i] = (s * 30000).toInt().toShort()
+        }
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(rate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build()
+            )
+            .setBufferSizeInBytes(n * 2)
+            .setTransferMode(AudioTrack.MODE_STATIC)
+            .build()
+        track.write(data, 0, n)
+        track.setLoopPoints(0, n, -1)
+        return track
+    }
+
     private fun sound() {
-        if (player != null) return
+        if (siren != null) return
         try {
             val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
             am.setStreamVolume(
@@ -117,20 +152,9 @@ class GuardService : Service(), SensorEventListener {
                 am.getStreamMaxVolume(AudioManager.STREAM_ALARM),
                 0
             )
-            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            val p = MediaPlayer()
-            p.setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build()
-            )
-            p.setDataSource(this, uri)
-            p.isLooping = true
-            p.prepare()
-            p.start()
-            player = p
+            val t = buildSiren()
+            t.play()
+            siren = t
             val v = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
             v.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 500, 300), 0))
         } catch (e: Exception) {
@@ -143,11 +167,11 @@ class GuardService : Service(), SensorEventListener {
         pending = false
         handler.removeCallbacksAndMessages(null)
         sm?.unregisterListener(this)
-        player?.let {
+        siren?.let {
             try { it.stop() } catch (e: Exception) {}
             it.release()
         }
-        player = null
+        siren = null
         try {
             (getSystemService(Context.VIBRATOR_SERVICE) as Vibrator).cancel()
         } catch (e: Exception) {}
