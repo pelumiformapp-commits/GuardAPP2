@@ -31,11 +31,13 @@ class GuardService : Service(), SensorEventListener {
         var running = false
     }
 
-    private val threshold = 4.0   // lower = more sensitive
+    private val threshold = 4.0          // lower = more sensitive
+    private val sirenDelayMs = 10000L    // time to disarm before siren
     private var sm: SensorManager? = null
     private var wl: PowerManager.WakeLock? = null
     private var player: MediaPlayer? = null
     private var armed = false
+    private var pending = false
     private var last = -1.0
     private val handler = Handler(Looper.getMainLooper())
 
@@ -89,13 +91,24 @@ class GuardService : Service(), SensorEventListener {
         val y = e.values[1].toDouble()
         val z = e.values[2].toDouble()
         val m = sqrt(x * x + y * y + z * z)
-        if (last >= 0 && abs(m - last) > threshold) trigger()
+        if (last >= 0 && abs(m - last) > threshold) onShake()
         last = m
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
-    private fun trigger() {
+    private fun onShake() {
+        if (pending || player != null) return
+        pending = true
+        getSystemService(NotificationManager::class.java)
+            .notify(1, note("Shake detected! Siren in 10 seconds"))
+        handler.postDelayed({
+            pending = false
+            sound()
+        }, sirenDelayMs)
+    }
+
+    private fun sound() {
         if (player != null) return
         try {
             val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -127,6 +140,7 @@ class GuardService : Service(), SensorEventListener {
     private fun cleanup() {
         running = false
         armed = false
+        pending = false
         handler.removeCallbacksAndMessages(null)
         sm?.unregisterListener(this)
         player?.let {
