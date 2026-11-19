@@ -74,6 +74,11 @@ class MainActivity : Activity() {
         box.addView(appSettings)
         setContentView(box)
         refresh()
+
+        if (intent.getBooleanExtra("arm", false)) {
+            startForegroundService(Intent(this, GuardService::class.java))
+            finish()
+        }
     }
 
     override fun onResume() {
